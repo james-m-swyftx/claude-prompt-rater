@@ -1,0 +1,17 @@
+{
+  "name": "swyftx-claude-tools",
+  "owner": {
+    "name": "James McAuley",
+    "email": "james.mcauley@swyftx.com.au"
+  },
+  "description": "Internal Claude Code tools.",
+  "plugins": [
+    {
+      "name": "prompt-rater",
+      "source": "./plugins/prompt-rater",
+      "description": "Status line that grades the quality of your most recent prompt.",
+      "category": "productivity",
+      "keywords": ["statusline", "prompt", "quality", "feedback"]
+    }
+  ]
+}
