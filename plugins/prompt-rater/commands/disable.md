@@ -1,5 +1,6 @@
 ---
 description: Turn off the prompt-rater status line (removes it from your settings.json)
+allowed-tools: Bash(bash:*)
 ---
 
 Disabling the prompt-rater status line:

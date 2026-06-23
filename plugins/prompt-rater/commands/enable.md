@@ -1,5 +1,6 @@
 ---
 description: Turn on the prompt-rater status line (wires it into your settings.json)
+allowed-tools: Bash(bash:*)
 ---
 
 Enabling the prompt-rater status line:

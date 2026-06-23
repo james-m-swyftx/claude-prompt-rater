@@ -18,8 +18,8 @@ vague phrasing. **Pure local heuristics: no LLM call, zero latency, zero token c
 ### Install
 
 ```bash
-# Add this marketplace (GitHub shorthand once it's pushed, or a local path to test)
-/plugin marketplace add <owner>/<repo>
+# Add this marketplace
+/plugin marketplace add james-m-swyftx/claude-prompt-rater
 
 # Install the plugin
 /plugin install prompt-rater@swyftx-claude-tools
