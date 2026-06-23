@@ -1,6 +1,6 @@
 {
   "name": "prompt-rater",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "description": "Status line that grades your most recent Claude Code prompt (detail, context, clarity, constraints, success criteria) and suggests one improvement. Local heuristics — no LLM call, zero latency.",
   "author": {
     "name": "James McAuley",
