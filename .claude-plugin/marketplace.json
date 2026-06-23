@@ -1,10 +1,10 @@
 {
-  "name": "swyftx-claude-tools",
+  "name": "jm-claude-tools",
   "owner": {
     "name": "James McAuley",
     "email": "james.mcauley@swyftx.com.au"
   },
-  "description": "Internal Claude Code tools.",
+  "description": "James McAuley's Claude Code tools.",
   "plugins": [
     {
       "name": "prompt-rater",

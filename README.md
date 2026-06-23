@@ -1,4 +1,4 @@
-# swyftx-claude-tools — Claude Code plugin marketplace
+# jm-claude-tools — Claude Code plugin marketplace
 
 A small internal marketplace. Currently ships one plugin:
 
@@ -22,7 +22,7 @@ vague phrasing. **Pure local heuristics: no LLM call, zero latency, zero token c
 /plugin marketplace add james-m-swyftx/claude-prompt-rater
 
 # Install the plugin
-/plugin install prompt-rater@swyftx-claude-tools
+/plugin install prompt-rater@jm-claude-tools
 
 # Turn the status line on (writes to your ~/.claude/settings.json, with a backup)
 /prompt-rater:enable
