@@ -1,19 +1,21 @@
 #!/usr/bin/env node
 /**
- * Claude Code status line: rates the quality of your most recent prompt.
+ * Claude Code status line.
  *
- * Reads the session transcript (path supplied on stdin by Claude Code), finds
- * the last prompt YOU typed, and scores it on five dimensions with cheap, fast
- * heuristics (no LLM call — the status line re-renders too often for that).
+ * Left → right:
+ *   model · dir · git-branch  │  ctx-tokens % ▰meter · $cost · +lines -lines · duration  │  ✎ grade score · HH:MM AEST
  *
- * Output: <model · dir>  ✎ Prompt: <grade> (<score>) · strong: … · try: …
+ * Prompt grade is a fast local heuristic (no LLM call). Usage/cost/lines/duration
+ * come from the JSON Claude Code pipes in on stdin; context tokens and the last
+ * prompt's timestamp are read from the session transcript.
  */
 
 'use strict'
 
 const fs = require('fs')
+const cp = require('child_process')
 
-// ---------- read the JSON Claude Code pipes in on stdin ----------
+// ---------- stdin ----------
 function readStdin() {
   try {
     return fs.readFileSync(0, 'utf8')
@@ -22,10 +24,11 @@ function readStdin() {
   }
 }
 
-// ---------- pull the last human-typed prompt out of the transcript ----------
-function lastUserPrompt(transcriptPath) {
-  if (!transcriptPath || !fs.existsSync(transcriptPath)) return ''
-  const lines = fs.readFileSync(transcriptPath, 'utf8').split('\n')
+// ---------- transcript: last prompt text + its time + current context size ----------
+function parseTranscript(path) {
+  const res = { prompt: '', promptTime: null, contextTokens: 0 }
+  if (!path || !fs.existsSync(path)) return res
+  const lines = fs.readFileSync(path, 'utf8').split('\n')
   for (let i = lines.length - 1; i >= 0; i--) {
     const line = lines[i].trim()
     if (!line) continue
@@ -35,28 +38,46 @@ function lastUserPrompt(transcriptPath) {
     } catch {
       continue
     }
-    if (obj.type !== 'user' || obj.isMeta) continue
-    const msg = obj.message
-    if (!msg || msg.role !== 'user') continue
 
-    let text = ''
-    if (typeof msg.content === 'string') {
-      text = msg.content
-    } else if (Array.isArray(msg.content)) {
-      // Skip tool results — those are not prompts the user typed.
-      if (msg.content.some((b) => b && b.type === 'tool_result')) continue
-      text = msg.content
-        .filter((b) => b && b.type === 'text')
-        .map((b) => b.text)
-        .join('\n')
+    // Most recent token usage = how full the context window is.
+    if (!res.contextTokens && obj.message && obj.message.usage) {
+      const u = obj.message.usage
+      res.contextTokens =
+        (u.input_tokens || 0) +
+        (u.cache_read_input_tokens || 0) +
+        (u.cache_creation_input_tokens || 0)
     }
-    const cleaned = stripNoise(text)
-    if (cleaned) return cleaned
+
+    // Most recent prompt the user actually typed.
+    if (!res.prompt && obj.type === 'user' && !obj.isMeta) {
+      const msg = obj.message
+      if (msg && msg.role === 'user') {
+        let text = ''
+        if (typeof msg.content === 'string') {
+          text = msg.content
+        } else if (Array.isArray(msg.content)) {
+          // Skip tool results — not something the user typed.
+          if (!msg.content.some((b) => b && b.type === 'tool_result')) {
+            text = msg.content
+              .filter((b) => b && b.type === 'text')
+              .map((b) => b.text)
+              .join('\n')
+          }
+        }
+        const cleaned = stripNoise(text)
+        if (cleaned) {
+          res.prompt = cleaned
+          res.promptTime = obj.timestamp || null
+        }
+      }
+    }
+
+    if (res.prompt && res.contextTokens) break
   }
-  return ''
+  return res
 }
 
-// Remove command wrappers / system reminders so we score what you actually wrote.
+// Strip command wrappers / system reminders so we score what you actually wrote.
 function stripNoise(text) {
   return text
     .replace(/<system-reminder>[\s\S]*?<\/system-reminder>/gi, ' ')
@@ -67,59 +88,66 @@ function stripNoise(text) {
     .trim()
 }
 
-// ---------- the rubric ----------
+// ---------- prompt-quality rubric ----------
 function score(prompt) {
   const t = prompt.toLowerCase()
   const words = prompt.split(/\s+/).filter(Boolean)
   const wc = words.length
-  const dims = {}
+  let total = 0
 
-  // 1. Substance / length (0-25)
-  if (wc <= 2) dims.length = 4
-  else if (wc <= 6) dims.length = 12
-  else if (wc <= 150) dims.length = 25
-  else dims.length = 19 // very long prompts often ramble
+  // Substance (0-25)
+  if (wc <= 2) total += 4
+  else if (wc <= 6) total += 12
+  else if (wc <= 150) total += 25
+  else total += 19
 
-  // 2. Specificity / concrete referents (0-25)
+  // Specificity (0-25)
   let spec = 0
-  if (/`[^`]+`/.test(prompt)) spec += 9 // backticked code/identifiers
-  if (/[\w-]+\.[a-z]{1,5}\b/.test(prompt)) spec += 7 // filenames / extensions
-  if (/[\/\\][\w.-]+/.test(prompt)) spec += 4 // paths
-  if (/[a-z][a-zA-Z]*[A-Z]|[a-z]+_[a-z]+/.test(prompt)) spec += 4 // camelCase / snake_case
-  if (/["'][^"']{3,}["']/.test(prompt)) spec += 4 // quoted literals
-  if (/\b\d+\b/.test(prompt)) spec += 2 // concrete numbers
-  dims.specificity = Math.min(25, spec)
+  if (/`[^`]+`/.test(prompt)) spec += 9
+  if (/[\w-]+\.[a-z]{1,5}\b/.test(prompt)) spec += 7
+  if (/[\/\\][\w.-]+/.test(prompt)) spec += 4
+  if (/[a-z][a-zA-Z]*[A-Z]|[a-z]+_[a-z]+/.test(prompt)) spec += 4
+  if (/["'][^"']{3,}["']/.test(prompt)) spec += 4
+  if (/\b\d+\b/.test(prompt)) spec += 2
+  total += Math.min(25, spec)
 
-  // 3. Clear, actionable ask (0-20)
+  // Clear ask (0-20)
   const verbs =
     /\b(add|fix|create|build|refactor|explain|write|update|remove|delete|implement|review|test|debug|optimi[sz]e|rename|move|generate|convert|compare|summari[sz]e|analy[sz]e|design|document|investigate|rate|check|find|list)\b/
   let ask = 0
   if (verbs.test(t)) ask += 14
   if (prompt.includes('?')) ask += 6
-  dims.ask = Math.min(20, ask)
+  total += Math.min(20, ask)
 
-  // 4. Constraints / output format (0-15)
-  const constraints =
-    /\b(must|should|don'?t|do not|only|without|instead of|format|return|output|as a|in (?:json|yaml|markdown|typescript|python|bash)|no |avoid|keep it|limit|max(?:imum)?|min(?:imum)?)\b/
-  dims.constraints = constraints.test(t) ? 15 : 0
+  // Constraints / format (0-15)
+  if (
+    /\b(must|should|don'?t|do not|only|without|instead of|format|return|output|as a|in (?:json|yaml|markdown|typescript|python|bash)|no |avoid|keep it|limit|max(?:imum)?|min(?:imum)?)\b/.test(
+      t
+    )
+  ) {
+    total += 15
+  }
 
-  // 5. Success criteria / examples / verification (0-15)
-  const success =
-    /\b(for example|e\.g\.|such as|expected|so that|make sure|ensure|verify|test that|should (?:pass|return|equal)|acceptance|definition of done|like this)\b/
-  dims.success = success.test(t) ? 15 : 0
-
-  let total =
-    dims.length + dims.specificity + dims.ask + dims.constraints + dims.success
+  // Success criteria / examples (0-15)
+  if (
+    /\b(for example|e\.g\.|such as|expected|so that|make sure|ensure|verify|test that|should (?:pass|return|equal)|acceptance|definition of done|like this)\b/.test(
+      t
+    )
+  ) {
+    total += 15
+  }
 
   // Vagueness penalty
-  const vague =
-    /\b(fix it|make it work|do the thing|the stuff|whatever|something like that|as before|you know|etc\b)/
-  let penalty = 0
-  if (vague.test(t)) penalty += 12
-  if (wc <= 3 && !verbs.test(t)) penalty += 6
-  total = Math.max(0, total - penalty)
+  if (
+    /\b(fix it|make it work|do the thing|the stuff|whatever|something like that|as before|you know|etc\b)/.test(
+      t
+    )
+  ) {
+    total -= 12
+  }
+  if (wc <= 3 && !verbs.test(t)) total -= 6
 
-  return { total: Math.round(total), dims, wc }
+  return Math.max(0, Math.round(total))
 }
 
 function grade(s) {
@@ -134,43 +162,7 @@ function grade(s) {
   return 'F'
 }
 
-const LABEL = {
-  length: 'detail',
-  specificity: 'context',
-  ask: 'clear ask',
-  constraints: 'constraints',
-  success: 'success criteria'
-}
-const MAX = { length: 25, specificity: 25, ask: 20, constraints: 15, success: 15 }
-const TIP = {
-  length: 'add more detail',
-  specificity: 'name the file/symbol',
-  ask: 'lead with an action verb',
-  constraints: 'state constraints/output format',
-  success: 'add success criteria'
-}
-
-function strengths(dims) {
-  return Object.keys(dims)
-    .filter((k) => dims[k] / MAX[k] >= 0.75)
-    .map((k) => LABEL[k])
-    .slice(0, 2)
-}
-
-function weakest(dims) {
-  let lo = null
-  let loFrac = 1
-  for (const k of Object.keys(dims)) {
-    const frac = dims[k] / MAX[k]
-    if (frac < loFrac) {
-      loFrac = frac
-      lo = k
-    }
-  }
-  return loFrac < 0.7 ? lo : null
-}
-
-// ---------- colour ----------
+// ---------- colour + formatting helpers ----------
 const C = {
   reset: '\x1b[0m',
   bold: '\x1b[1m',
@@ -178,18 +170,76 @@ const C = {
   green: '\x1b[32m',
   cyan: '\x1b[36m',
   yellow: '\x1b[33m',
-  red: '\x1b[31m'
+  red: '\x1b[31m',
+  magenta: '\x1b[35m'
 }
+const SEP = ` ${C.dim}·${C.reset} `
+const GROUP = ` ${C.dim}│${C.reset} `
+
 function gradeColor(s) {
   if (s >= 78) return C.green
   if (s >= 62) return C.cyan
   if (s >= 45) return C.yellow
   return C.red
 }
-// A 5-segment meter, filled proportionally to the score and tinted by grade.
-function meter(total, col) {
-  const filled = Math.max(0, Math.min(5, Math.round(total / 20)))
+// Fuller context = worse, so colour inverts relative to the grade scale.
+function ctxColor(pct) {
+  if (pct < 50) return C.green
+  if (pct < 80) return C.yellow
+  return C.red
+}
+// 5-segment meter filled proportionally (value is a 0-100 percentage).
+function meter(pct, col) {
+  const filled = Math.max(0, Math.min(5, Math.round(pct / 20)))
   return `${col}${'▰'.repeat(filled)}${C.dim}${'▱'.repeat(5 - filled)}${C.reset}`
+}
+function fmtTokens(n) {
+  if (n >= 1000) {
+    const k = n / 1000
+    return (k >= 100 ? Math.round(k) : Math.round(k * 10) / 10) + 'k'
+  }
+  return String(n)
+}
+function fmtDuration(ms) {
+  const s = Math.floor(ms / 1000)
+  if (s < 60) return `${s}s`
+  const m = Math.floor(s / 60)
+  if (m < 60) return `${m}m`
+  const h = Math.floor(m / 60)
+  return `${h}h${m % 60}m`
+}
+function fmtAEST(iso) {
+  if (!iso) return null
+  try {
+    // Australia/Brisbane is permanently UTC+10 (no DST) = AEST.
+    return new Date(iso).toLocaleTimeString('en-AU', {
+      hour: '2-digit',
+      minute: '2-digit',
+      hour12: false,
+      timeZone: 'Australia/Brisbane'
+    })
+  } catch {
+    return null
+  }
+}
+function gitInfo(dir) {
+  if (!dir) return null
+  const run = (cmd) =>
+    cp
+      .execSync(cmd, { cwd: dir, stdio: ['ignore', 'pipe', 'ignore'], timeout: 300 })
+      .toString()
+      .trim()
+  try {
+    const branch = run('git rev-parse --abbrev-ref HEAD')
+    if (!branch) return null
+    let dirty = false
+    try {
+      dirty = run('git status --porcelain').length > 0
+    } catch {}
+    return { branch, dirty }
+  } catch {
+    return null
+  }
 }
 
 // ---------- main ----------
@@ -202,34 +252,59 @@ function main() {
   }
 
   const model = (data.model && data.model.display_name) || 'Claude'
-  const dir =
-    (data.workspace && data.workspace.current_dir) || data.cwd || ''
+  const modelId = (data.model && data.model.id) || ''
+  const dir = (data.workspace && data.workspace.current_dir) || data.cwd || ''
   const base = dir ? dir.split('/').pop() : ''
-  const left = `${C.dim}${model}${base ? ' · ' + base : ''}${C.reset}`
+  const cost = data.cost || {}
+  const { prompt, promptTime, contextTokens } = parseTranscript(data.transcript_path)
 
-  const prompt = lastUserPrompt(data.transcript_path)
-  if (!prompt) {
-    process.stdout.write(`${left}  ${C.dim}✎ awaiting prompt…${C.reset}`)
-    return
+  // --- identity group ---
+  const idParts = [`${C.dim}${model}${C.reset}`]
+  if (base) idParts.push(`${C.dim}${base}${C.reset}`)
+  const git = gitInfo(dir)
+  if (git) idParts.push(`${C.magenta}${git.branch}${git.dirty ? '*' : ''}${C.reset}`)
+
+  // --- usage group ---
+  const usageParts = []
+  if (contextTokens > 0) {
+    const limit = /\[?1m\]?/i.test(modelId + model) ? 1000000 : 200000
+    const pct = Math.min(100, Math.round((contextTokens / limit) * 100))
+    const col = ctxColor(pct)
+    usageParts.push(
+      `${col}${fmtTokens(contextTokens)} ${pct}%${C.reset} ${meter(pct, col)}`
+    )
+  }
+  if (typeof cost.total_cost_usd === 'number') {
+    usageParts.push(`${C.cyan}$${cost.total_cost_usd.toFixed(2)}${C.reset}`)
+  }
+  const added = cost.total_lines_added || 0
+  const removed = cost.total_lines_removed || 0
+  if (added || removed) {
+    usageParts.push(
+      `${C.green}+${added}${C.reset} ${C.red}-${removed}${C.reset}`
+    )
+  }
+  if (typeof cost.total_duration_ms === 'number' && cost.total_duration_ms > 0) {
+    usageParts.push(`${C.dim}${fmtDuration(cost.total_duration_ms)}${C.reset}`)
   }
 
-  const { total, dims } = score(prompt)
-  const g = grade(total)
-  const col = gradeColor(total)
-  const str = strengths(dims)
-  const weak = weakest(dims)
-
-  let out =
-    `${left}  ${C.dim}✎${C.reset} ` +
-    `${col}${C.bold}${g}${C.reset} ${meter(total, col)} ${C.dim}${total}${C.reset}`
-  if (str.length) {
-    out += `  ${C.green}✓${C.reset} ${C.dim}${str.join(', ')}${C.reset}`
-  }
-  if (weak) {
-    out += `  ${C.yellow}→ ${TIP[weak]}${C.reset}`
+  // --- prompt group ---
+  let promptSeg
+  if (prompt) {
+    const s = score(prompt)
+    const gcol = gradeColor(s)
+    promptSeg = `${C.dim}✎${C.reset} ${gcol}${C.bold}${grade(s)}${C.reset} ${C.dim}${s}${C.reset}`
+    const time = fmtAEST(promptTime)
+    if (time) promptSeg += `${SEP}${C.dim}${time} AEST${C.reset}`
+  } else {
+    promptSeg = `${C.dim}✎ awaiting prompt…${C.reset}`
   }
 
-  process.stdout.write(out)
+  const groups = [idParts.join(SEP)]
+  if (usageParts.length) groups.push(usageParts.join(SEP))
+  groups.push(promptSeg)
+
+  process.stdout.write(groups.join(GROUP))
 }
 
 main()

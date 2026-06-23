@@ -4,16 +4,26 @@ A small internal marketplace. Currently ships one plugin:
 
 ## `prompt-rater`
 
-Adds a status line to the bottom of the Claude Code CLI that **grades your most
-recent prompt** — so you get instant feedback on how well you're prompting.
+Adds a rich status line to the bottom of the Claude Code CLI. Alongside live
+session usage, it **grades your most recent prompt** — so you get instant
+feedback on how well you're prompting.
 
 ```
-Opus 4.8 · platform  ✎ Prompt: A- (87) · strong: context, clear ask · try: add success criteria
+Opus 4.8 · platform · feat/my-branch │ 243k 24% ▰▱▱▱▱ · $0.18 · +120 -34 · 32m │ ✎ B+ 84 · 14:32 AEST
 ```
 
-It scores five things a good prompt has — detail, context (filenames/code/paths),
-a clear ask, constraints/output format, and success criteria — minus a penalty for
-vague phrasing. **Pure local heuristics: no LLM call, zero latency, zero token cost.**
+Segments, left → right:
+
+- **Identity** — model · current dir · git branch (`*` = uncommitted changes)
+- **Usage** — context tokens + % of the window (with meter) · session cost ·
+  lines added/removed · session duration
+- **Prompt** — a letter grade + score for your last prompt, and the time you
+  sent it (AEST)
+
+The grade scores five things a good prompt has — detail, context (filenames/code/
+paths), a clear ask, constraints/output format, and success criteria — minus a
+penalty for vague phrasing. **Pure local heuristics: no LLM call, zero latency,
+zero token cost.**
 
 ### Install
 
