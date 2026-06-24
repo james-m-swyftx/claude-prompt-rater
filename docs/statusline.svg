@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="980" height="92" viewBox="0 0 980 92" font-family="'SFMono-Regular',Consolas,'Liberation Mono',Menlo,monospace" font-size="13.5">
+  <rect width="980" height="92" rx="10" fill="#0d1117" stroke="#30363d" stroke-width="1"/>
+  <circle cx="22" cy="22" r="6" fill="#f85149"/>
+  <circle cx="42" cy="22" r="6" fill="#e3b341"/>
+  <circle cx="62" cy="22" r="6" fill="#3fb950"/>
+  <text x="16" y="66" xml:space="preserve">
+    <tspan fill="#8b949e">Opus 4.8 · platform · </tspan><tspan fill="#bc8cff">feat/my-branch</tspan><tspan fill="#8b949e"> │ </tspan><tspan fill="#3fb950">243k 24% ▰</tspan><tspan fill="#8b949e">▱▱▱▱</tspan><tspan fill="#8b949e"> · </tspan><tspan fill="#39c5cf">$0.18</tspan><tspan fill="#8b949e"> · </tspan><tspan fill="#3fb950">+120</tspan><tspan fill="#8b949e"> </tspan><tspan fill="#f85149">-34</tspan><tspan fill="#8b949e"> · 32m │ ✎ </tspan><tspan fill="#3fb950" font-weight="bold">B+</tspan><tspan fill="#8b949e"> 84 </tspan><tspan fill="#3fb950">↑</tspan><tspan fill="#8b949e"> · 14:32 AEST · </tspan><tspan fill="#d29922">→ name the file/symbol</tspan>
+  </text>
+</svg>

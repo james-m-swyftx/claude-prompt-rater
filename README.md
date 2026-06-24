@@ -8,6 +8,8 @@ Adds a rich status line to the bottom of the Claude Code CLI. Alongside live
 session usage, it **grades your most recent prompt** — so you get instant
 feedback on how well you're prompting.
 
+![prompt-rater status line](docs/statusline.svg)
+
 ```
 Opus 4.8 · platform · feat/my-branch │ 243k 24% ▰▱▱▱▱ · $0.18 · +120 -34 · 32m │ ✎ B+ 84 ↑ · 14:32 AEST · → name the file/symbol
 ```

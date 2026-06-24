@@ -20,6 +20,24 @@ const fs = require('fs')
 const cp = require('child_process')
 
 const CONTEXT_TREND_SAMPLES = 5
+// Transcripts grow to many MB; we only need the tail (recent prompts + latest usage).
+const MAX_TAIL_BYTES = 512 * 1024
+
+// Read only the last `maxBytes` of a file. The first line may be partial — callers
+// parse line-by-line and skip unparseable lines, so a truncated head is harmless.
+function readTail(path, maxBytes) {
+  const size = fs.statSync(path).size
+  const start = Math.max(0, size - maxBytes)
+  const length = size - start
+  const fd = fs.openSync(path, 'r')
+  try {
+    const buf = Buffer.allocUnsafe(length)
+    fs.readSync(fd, buf, 0, length, start)
+    return buf.toString('utf8')
+  } finally {
+    fs.closeSync(fd)
+  }
+}
 
 // ---------- stdin ----------
 function readStdin() {
@@ -34,7 +52,13 @@ function readStdin() {
 function parseTranscript(path, maxPrompts) {
   const res = { prompts: [], contextTokens: 0 }
   if (!path || !fs.existsSync(path)) return res
-  const lines = fs.readFileSync(path, 'utf8').split('\n')
+  let content
+  try {
+    content = readTail(path, MAX_TAIL_BYTES)
+  } catch {
+    return res
+  }
+  const lines = content.split('\n')
   for (let i = lines.length - 1; i >= 0; i--) {
     const line = lines[i].trim()
     if (!line) continue
@@ -440,5 +464,6 @@ module.exports = {
   fmtTokens,
   fmtDuration,
   fmtAEST,
-  stripNoise
+  stripNoise,
+  parseTranscript
 }

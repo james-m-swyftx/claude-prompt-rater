@@ -74,3 +74,28 @@ test('trendArrow', () => {
 test('stripNoise removes system reminders and tags', () => {
   assert.equal(sl.stripNoise('hello <system-reminder>noise</system-reminder> world'), 'hello world')
 })
+
+test('parseTranscript reads only the tail of a large transcript', () => {
+  const os = require('node:os')
+  const path = require('node:path')
+  const fs = require('node:fs')
+  const f = path.join(os.tmpdir(), `pr-tail-${process.pid}.jsonl`)
+  // >1MB of old filler (isMeta so it is never treated as a prompt), then the
+  // real recent lines at the very end — only those should be picked up.
+  const filler =
+    JSON.stringify({ type: 'user', isMeta: true, message: { role: 'user', content: 'x'.repeat(200) } }) + '\n'
+  let big = filler.repeat(5000)
+  big +=
+    JSON.stringify({ type: 'assistant', message: { role: 'assistant', usage: { input_tokens: 1000, cache_read_input_tokens: 50000 } } }) + '\n'
+  big +=
+    JSON.stringify({ type: 'user', timestamp: '2026-06-24T04:32:00Z', message: { role: 'user', content: 'refactor `parseConfig` in src/config.ts' } }) + '\n'
+  fs.writeFileSync(f, big)
+  try {
+    assert.ok(fs.statSync(f).size > 1024 * 1024) // confirm it really is large
+    const r = sl.parseTranscript(f, 5)
+    assert.equal(r.prompts[0].text.includes('parseConfig'), true)
+    assert.equal(r.contextTokens, 51000)
+  } finally {
+    fs.unlinkSync(f)
+  }
+})
