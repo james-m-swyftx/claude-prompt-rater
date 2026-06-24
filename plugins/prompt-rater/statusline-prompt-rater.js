@@ -2,18 +2,24 @@
 /**
  * Claude Code status line.
  *
- * Left → right:
- *   model · dir · git-branch  │  ctx-tokens % ▰meter · $cost · +lines -lines · duration  │  ✎ grade score · HH:MM AEST
+ *   model · dir · git │ ctx% ▰meter ⚠ · $cost · +/-lines · dur │ ✎ grade score ↑ · HH:MM AEST · → tip
  *
  * Prompt grade is a fast local heuristic (no LLM call). Usage/cost/lines/duration
- * come from the JSON Claude Code pipes in on stdin; context tokens and the last
- * prompt's timestamp are read from the session transcript.
+ * come from the stdin JSON; context tokens, the last prompt's time, and the
+ * recent-prompt trend are read from the session transcript.
+ *
+ * Per-user config (all optional): ~/.claude/prompt-rater.json
+ *   { "contextLimit": 1000000,
+ *     "segments": { "cost": false, "trend": true, ... } }   // any segment -> false hides it
+ * Override the config path with PROMPT_RATER_CONFIG.
  */
 
 'use strict'
 
 const fs = require('fs')
 const cp = require('child_process')
+
+const CONTEXT_TREND_SAMPLES = 5
 
 // ---------- stdin ----------
 function readStdin() {
@@ -24,9 +30,9 @@ function readStdin() {
   }
 }
 
-// ---------- transcript: last prompt text + its time + current context size ----------
-function parseTranscript(path) {
-  const res = { prompt: '', promptTime: null, contextTokens: 0 }
+// ---------- transcript: recent prompts (+times) and current context size ----------
+function parseTranscript(path, maxPrompts) {
+  const res = { prompts: [], contextTokens: 0 }
   if (!path || !fs.existsSync(path)) return res
   const lines = fs.readFileSync(path, 'utf8').split('\n')
   for (let i = lines.length - 1; i >= 0; i--) {
@@ -48,15 +54,14 @@ function parseTranscript(path) {
         (u.cache_creation_input_tokens || 0)
     }
 
-    // Most recent prompt the user actually typed.
-    if (!res.prompt && obj.type === 'user' && !obj.isMeta) {
+    // Recent prompts the user actually typed (most-recent first).
+    if (res.prompts.length < maxPrompts && obj.type === 'user' && !obj.isMeta) {
       const msg = obj.message
       if (msg && msg.role === 'user') {
         let text = ''
         if (typeof msg.content === 'string') {
           text = msg.content
         } else if (Array.isArray(msg.content)) {
-          // Skip tool results — not something the user typed.
           if (!msg.content.some((b) => b && b.type === 'tool_result')) {
             text = msg.content
               .filter((b) => b && b.type === 'text')
@@ -65,14 +70,11 @@ function parseTranscript(path) {
           }
         }
         const cleaned = stripNoise(text)
-        if (cleaned) {
-          res.prompt = cleaned
-          res.promptTime = obj.timestamp || null
-        }
+        if (cleaned) res.prompts.push({ text: cleaned, time: obj.timestamp || null })
       }
     }
 
-    if (res.prompt && res.contextTokens) break
+    if (res.contextTokens && res.prompts.length >= maxPrompts) break
   }
   return res
 }
@@ -93,13 +95,13 @@ function score(prompt) {
   const t = prompt.toLowerCase()
   const words = prompt.split(/\s+/).filter(Boolean)
   const wc = words.length
-  let total = 0
+  const dims = {}
 
   // Substance (0-25)
-  if (wc <= 2) total += 4
-  else if (wc <= 6) total += 12
-  else if (wc <= 150) total += 25
-  else total += 19
+  if (wc <= 2) dims.length = 4
+  else if (wc <= 6) dims.length = 12
+  else if (wc <= 150) dims.length = 25
+  else dims.length = 19
 
   // Specificity (0-25)
   let spec = 0
@@ -109,7 +111,7 @@ function score(prompt) {
   if (/[a-z][a-zA-Z]*[A-Z]|[a-z]+_[a-z]+/.test(prompt)) spec += 4
   if (/["'][^"']{3,}["']/.test(prompt)) spec += 4
   if (/\b\d+\b/.test(prompt)) spec += 2
-  total += Math.min(25, spec)
+  dims.specificity = Math.min(25, spec)
 
   // Clear ask (0-20)
   const verbs =
@@ -117,27 +119,27 @@ function score(prompt) {
   let ask = 0
   if (verbs.test(t)) ask += 14
   if (prompt.includes('?')) ask += 6
-  total += Math.min(20, ask)
+  dims.ask = Math.min(20, ask)
 
   // Constraints / format (0-15)
-  if (
+  dims.constraints =
     /\b(must|should|don'?t|do not|only|without|instead of|format|return|output|as a|in (?:json|yaml|markdown|typescript|python|bash)|no |avoid|keep it|limit|max(?:imum)?|min(?:imum)?)\b/.test(
       t
     )
-  ) {
-    total += 15
-  }
+      ? 15
+      : 0
 
   // Success criteria / examples (0-15)
-  if (
+  dims.success =
     /\b(for example|e\.g\.|such as|expected|so that|make sure|ensure|verify|test that|should (?:pass|return|equal)|acceptance|definition of done|like this)\b/.test(
       t
     )
-  ) {
-    total += 15
-  }
+      ? 15
+      : 0
 
-  // Vagueness penalty
+  let total =
+    dims.length + dims.specificity + dims.ask + dims.constraints + dims.success
+
   if (
     /\b(fix it|make it work|do the thing|the stuff|whatever|something like that|as before|you know|etc\b)/.test(
       t
@@ -147,7 +149,7 @@ function score(prompt) {
   }
   if (wc <= 3 && !verbs.test(t)) total -= 6
 
-  return Math.max(0, Math.round(total))
+  return { total: Math.max(0, Math.round(total)), dims }
 }
 
 function grade(s) {
@@ -160,6 +162,77 @@ function grade(s) {
   if (s >= 45) return 'C'
   if (s >= 35) return 'D'
   return 'F'
+}
+
+const MAX = { length: 25, specificity: 25, ask: 20, constraints: 15, success: 15 }
+const TIP = {
+  length: 'add more detail',
+  specificity: 'name the file/symbol',
+  ask: 'lead with an action verb',
+  constraints: 'state constraints/output format',
+  success: 'add success criteria'
+}
+function weakest(dims) {
+  let lo = null
+  let loFrac = 1
+  for (const k of Object.keys(dims)) {
+    const frac = dims[k] / MAX[k]
+    if (frac < loFrac) {
+      loFrac = frac
+      lo = k
+    }
+  }
+  return loFrac < 0.7 ? lo : null
+}
+
+// Trend of the most recent prompt vs the average of the preceding few.
+function trendArrow(scores) {
+  if (!scores || scores.length < 2) return null
+  const cur = scores[0]
+  const prev = scores.slice(1)
+  const avg = prev.reduce((a, b) => a + b, 0) / prev.length
+  if (cur >= avg + 5) return 'up'
+  if (cur <= avg - 5) return 'down'
+  return 'flat'
+}
+
+// 200k unless the model signals 1M — or unless we already observe >200k tokens
+// (a 200k model physically can't, so the window must be larger).
+function resolveContextLimit(cfgLimit, idName, contextTokens) {
+  let limit = cfgLimit || (/1m|\[1m\]/i.test(idName) ? 1000000 : 200000)
+  if (contextTokens > limit) limit = 1000000
+  return limit
+}
+
+// ---------- config ----------
+function loadConfig() {
+  const home = process.env.HOME || ''
+  const path =
+    process.env.PROMPT_RATER_CONFIG || (home ? `${home}/.claude/prompt-rater.json` : '')
+  let cfg = {}
+  if (path && fs.existsSync(path)) {
+    try {
+      cfg = JSON.parse(fs.readFileSync(path, 'utf8'))
+    } catch {}
+  }
+  const s = cfg.segments || {}
+  const on = (k) => s[k] !== false // default on
+  return {
+    contextLimit: cfg.contextLimit || null,
+    seg: {
+      model: on('model'),
+      dir: on('dir'),
+      git: on('git'),
+      context: on('context'),
+      cost: on('cost'),
+      lines: on('lines'),
+      duration: on('duration'),
+      grade: on('grade'),
+      trend: on('trend'),
+      time: on('time'),
+      tip: on('tip')
+    }
+  }
 }
 
 // ---------- colour + formatting helpers ----------
@@ -182,13 +255,11 @@ function gradeColor(s) {
   if (s >= 45) return C.yellow
   return C.red
 }
-// Fuller context = worse, so colour inverts relative to the grade scale.
 function ctxColor(pct) {
   if (pct < 50) return C.green
   if (pct < 80) return C.yellow
   return C.red
 }
-// 5-segment meter filled proportionally (value is a 0-100 percentage).
 function meter(pct, col) {
   const filled = Math.max(0, Math.min(5, Math.round(pct / 20)))
   return `${col}${'▰'.repeat(filled)}${C.dim}${'▱'.repeat(5 - filled)}${C.reset}`
@@ -242,6 +313,8 @@ function gitInfo(dir) {
   }
 }
 
+const plainLen = (s) => s.replace(/\x1b\[[0-9;]*m/g, '').length
+
 // ---------- main ----------
 function main() {
   let data = {}
@@ -251,60 +324,121 @@ function main() {
     data = {}
   }
 
+  const cfg = loadConfig()
   const model = (data.model && data.model.display_name) || 'Claude'
   const modelId = (data.model && data.model.id) || ''
   const dir = (data.workspace && data.workspace.current_dir) || data.cwd || ''
   const base = dir ? dir.split('/').pop() : ''
   const cost = data.cost || {}
-  const { prompt, promptTime, contextTokens } = parseTranscript(data.transcript_path)
+  const { prompts, contextTokens } = parseTranscript(
+    data.transcript_path,
+    CONTEXT_TREND_SAMPLES
+  )
 
-  // --- identity group ---
-  const idParts = [`${C.dim}${model}${C.reset}`]
-  if (base) idParts.push(`${C.dim}${base}${C.reset}`)
+  // Precompute each field as a coloured string (empty if not applicable).
+  const modelStr = model ? `${C.dim}${model}${C.reset}` : ''
+  const dirStr = base ? `${C.dim}${base}${C.reset}` : ''
   const git = gitInfo(dir)
-  if (git) idParts.push(`${C.magenta}${git.branch}${git.dirty ? '*' : ''}${C.reset}`)
+  const gitStr = git ? `${C.magenta}${git.branch}${git.dirty ? '*' : ''}${C.reset}` : ''
 
-  // --- usage group ---
-  const usageParts = []
+  let ctxStr = ''
   if (contextTokens > 0) {
-    const limit = /\[?1m\]?/i.test(modelId + model) ? 1000000 : 200000
+    const limit = resolveContextLimit(cfg.contextLimit, `${modelId} ${model}`, contextTokens)
     const pct = Math.min(100, Math.round((contextTokens / limit) * 100))
     const col = ctxColor(pct)
-    usageParts.push(
-      `${col}${fmtTokens(contextTokens)} ${pct}%${C.reset} ${meter(pct, col)}`
-    )
+    ctxStr = `${col}${fmtTokens(contextTokens)} ${pct}%${C.reset} ${meter(pct, col)}`
+    if (pct >= 90) ctxStr += ` ${C.red}⚠${C.reset}`
   }
-  if (typeof cost.total_cost_usd === 'number') {
-    usageParts.push(`${C.cyan}$${cost.total_cost_usd.toFixed(2)}${C.reset}`)
-  }
+  const costStr =
+    typeof cost.total_cost_usd === 'number'
+      ? `${C.cyan}$${cost.total_cost_usd.toFixed(2)}${C.reset}`
+      : ''
   const added = cost.total_lines_added || 0
   const removed = cost.total_lines_removed || 0
-  if (added || removed) {
-    usageParts.push(
-      `${C.green}+${added}${C.reset} ${C.red}-${removed}${C.reset}`
-    )
-  }
-  if (typeof cost.total_duration_ms === 'number' && cost.total_duration_ms > 0) {
-    usageParts.push(`${C.dim}${fmtDuration(cost.total_duration_ms)}${C.reset}`)
+  const linesStr =
+    added || removed ? `${C.green}+${added}${C.reset} ${C.red}-${removed}${C.reset}` : ''
+  const durStr =
+    typeof cost.total_duration_ms === 'number' && cost.total_duration_ms > 0
+      ? `${C.dim}${fmtDuration(cost.total_duration_ms)}${C.reset}`
+      : ''
+
+  // Prompt fields
+  let gradeStr = ''
+  let arrowStr = ''
+  let timeStr = ''
+  let tipStr = ''
+  const havePrompt = prompts.length > 0
+  if (havePrompt) {
+    const scored = prompts.map((p) => score(p.text))
+    const cur = scored[0]
+    const gcol = gradeColor(cur.total)
+    gradeStr = `${C.dim}✎${C.reset} ${gcol}${C.bold}${grade(cur.total)}${C.reset} ${C.dim}${cur.total}${C.reset}`
+    const arrow = trendArrow(scored.map((x) => x.total))
+    if (arrow === 'up') arrowStr = `${C.green}↑${C.reset}`
+    else if (arrow === 'down') arrowStr = `${C.red}↓${C.reset}`
+    else if (arrow === 'flat') arrowStr = `${C.dim}→${C.reset}`
+    const t = fmtAEST(prompts[0].time)
+    if (t) timeStr = `${C.dim}${t} AEST${C.reset}`
+    const weak = weakest(cur.dims)
+    if (weak) tipStr = `${C.yellow}→ ${TIP[weak]}${C.reset}`
   }
 
-  // --- prompt group ---
-  let promptSeg
-  if (prompt) {
-    const s = score(prompt)
-    const gcol = gradeColor(s)
-    promptSeg = `${C.dim}✎${C.reset} ${gcol}${C.bold}${grade(s)}${C.reset} ${C.dim}${s}${C.reset}`
-    const time = fmtAEST(promptTime)
-    if (time) promptSeg += `${SEP}${C.dim}${time} AEST${C.reset}`
-  } else {
-    promptSeg = `${C.dim}✎ awaiting prompt…${C.reset}`
+  function render(seg) {
+    const id = []
+    if (seg.model && modelStr) id.push(modelStr)
+    if (seg.dir && dirStr) id.push(dirStr)
+    if (seg.git && gitStr) id.push(gitStr)
+
+    const usage = []
+    if (seg.context && ctxStr) usage.push(ctxStr)
+    if (seg.cost && costStr) usage.push(costStr)
+    if (seg.lines && linesStr) usage.push(linesStr)
+    if (seg.duration && durStr) usage.push(durStr)
+
+    const pr = []
+    if (havePrompt) {
+      if (seg.grade && gradeStr) {
+        pr.push(seg.trend && arrowStr ? `${gradeStr} ${arrowStr}` : gradeStr)
+      }
+      if (seg.time && timeStr) pr.push(timeStr)
+      if (seg.tip && tipStr) pr.push(tipStr)
+    } else {
+      pr.push(`${C.dim}✎ awaiting prompt…${C.reset}`)
+    }
+
+    const groups = []
+    if (id.length) groups.push(id.join(SEP))
+    if (usage.length) groups.push(usage.join(SEP))
+    if (pr.length) groups.push(pr.join(SEP))
+    return groups.join(GROUP)
   }
 
-  const groups = [idParts.join(SEP)]
-  if (usageParts.length) groups.push(usageParts.join(SEP))
-  groups.push(promptSeg)
+  // Width-aware: drop lowest-priority segments until it fits (best effort —
+  // only when a column count is known).
+  const seg = Object.assign({}, cfg.seg)
+  let out = render(seg)
+  const cols = parseInt(process.env.COLUMNS, 10) || process.stdout.columns || 0
+  if (cols > 0) {
+    const dropOrder = ['tip', 'trend', 'duration', 'lines', 'cost', 'time', 'git', 'context', 'dir']
+    for (let i = 0; i < dropOrder.length && plainLen(out) > cols; i++) {
+      seg[dropOrder[i]] = false
+      out = render(seg)
+    }
+  }
 
-  process.stdout.write(groups.join(GROUP))
+  process.stdout.write(out)
 }
 
-main()
+if (require.main === module) main()
+
+module.exports = {
+  score,
+  grade,
+  weakest,
+  trendArrow,
+  resolveContextLimit,
+  fmtTokens,
+  fmtDuration,
+  fmtAEST,
+  stripNoise
+}

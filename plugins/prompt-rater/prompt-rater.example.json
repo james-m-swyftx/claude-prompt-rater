@@ -1,0 +1,17 @@
+{
+  "_comment": "Optional. Copy to ~/.claude/prompt-rater.json (or set PROMPT_RATER_CONFIG). Any segment set to false is hidden. contextLimit overrides window-size detection.",
+  "contextLimit": 1000000,
+  "segments": {
+    "model": true,
+    "dir": true,
+    "git": true,
+    "context": true,
+    "cost": true,
+    "lines": true,
+    "duration": true,
+    "grade": true,
+    "trend": true,
+    "time": true,
+    "tip": true
+  }
+}

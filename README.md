@@ -9,21 +9,35 @@ session usage, it **grades your most recent prompt** — so you get instant
 feedback on how well you're prompting.
 
 ```
-Opus 4.8 · platform · feat/my-branch │ 243k 24% ▰▱▱▱▱ · $0.18 · +120 -34 · 32m │ ✎ B+ 84 · 14:32 AEST
+Opus 4.8 · platform · feat/my-branch │ 243k 24% ▰▱▱▱▱ · $0.18 · +120 -34 · 32m │ ✎ B+ 84 ↑ · 14:32 AEST · → name the file/symbol
 ```
 
 Segments, left → right:
 
 - **Identity** — model · current dir · git branch (`*` = uncommitted changes)
-- **Usage** — context tokens + % of the window (with meter) · session cost ·
-  lines added/removed · session duration
-- **Prompt** — a letter grade + score for your last prompt, and the time you
-  sent it (AEST)
+- **Usage** — context tokens + % of the window (meter; turns red and shows `⚠`
+  when nearly full) · session cost · lines added/removed · session duration
+- **Prompt** — letter grade + score for your last prompt, a trend arrow
+  (`↑/→/↓` vs your recent prompts), the time you sent it (AEST), and a one-line
+  tip for the weakest dimension
 
 The grade scores five things a good prompt has — detail, context (filenames/code/
 paths), a clear ask, constraints/output format, and success criteria — minus a
 penalty for vague phrasing. **Pure local heuristics: no LLM call, zero latency,
-zero token cost.**
+zero token cost.** On narrow terminals it drops the lowest-priority segments to
+avoid wrapping.
+
+### Configuration (optional)
+
+Drop a `~/.claude/prompt-rater.json` to hide segments or override context-window
+size (see `prompt-rater.example.json`):
+
+```json
+{ "contextLimit": 1000000, "segments": { "cost": false, "trend": false } }
+```
+
+Any segment set to `false` is hidden. Set `PROMPT_RATER_CONFIG` to use a
+different path.
 
 ### Install
 
@@ -58,6 +72,8 @@ Requires `node` on your PATH (`jq` recommended for safe settings merges).
 plugins/prompt-rater/
 ├── .claude-plugin/plugin.json      # plugin manifest
 ├── statusline-prompt-rater.js      # the status line script
+├── prompt-rater.example.json       # sample config
 ├── commands/{enable,disable}.md    # /prompt-rater:enable | :disable
-└── scripts/{enable,disable}.sh     # wire/unwire settings.json
+├── scripts/{enable,disable}.sh     # wire/unwire settings.json
+└── test/statusline.test.js         # `node --test` unit tests
 ```
