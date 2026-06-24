@@ -1,6 +1,6 @@
 {
   "name": "prompt-rater",
-  "version": "1.0.5",
+  "version": "1.0.6",
   "description": "Rich Claude Code status line: model, git branch, context-window usage (with near-full warning), session cost, lines changed, duration — plus a letter-grade rating of your most recent prompt, a quality trend arrow, the time you sent it (AEST), and a one-line tip. Configurable per-user; local heuristics, no LLM call.",
   "author": {
     "name": "James McAuley",

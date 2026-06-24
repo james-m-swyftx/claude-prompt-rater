@@ -61,6 +61,20 @@ Requires `node` on your PATH (`jq` recommended for safe settings merges).
 > plugin bundles the script and the enable command wires it in for you. Re-run
 > `/prompt-rater:enable` after a plugin update so the path stays current.
 
+### Deep critique on demand — `/prompt-rater:rate-prompt`
+
+The status line is an always-on heuristic. For a real, **LLM-judged** review, run:
+
+```bash
+/prompt-rater:rate-prompt              # rates your previous message
+/prompt-rater:rate-prompt <draft>      # rates the draft you pass in
+```
+
+It scores the prompt against Anthropic's [Claude Code expertise rubric](https://www.anthropic.com/research/claude-code-expertise)
+— domain context, success criteria & verification, clear delegation, right
+altitude, edge cases — then returns a per-dimension breakdown, the top gaps, and
+a rewritten prompt. Costs an API call; use it when a prompt really matters.
+
 ### Disable
 
 ```bash
@@ -75,7 +89,7 @@ plugins/prompt-rater/
 ├── .claude-plugin/plugin.json      # plugin manifest
 ├── statusline-prompt-rater.js      # the status line script
 ├── prompt-rater.example.json       # sample config
-├── commands/{enable,disable}.md    # /prompt-rater:enable | :disable
+├── commands/                       # /prompt-rater:enable | :disable | :rate-prompt
 ├── scripts/{enable,disable}.sh     # wire/unwire settings.json
 └── test/statusline.test.js         # `node --test` unit tests
 ```
